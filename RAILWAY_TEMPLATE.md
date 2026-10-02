@@ -39,7 +39,7 @@ rejects digests; `UPSTREAM.md` records the digests.
 
 | Field | Value |
 |---|---|
-| Source | `ghcr.io/youssefsiam38/multica-railway:1.0.0` |
+| Source | `ghcr.io/youssefsiam38/multica-railway:1.0.1` |
 | Public domain | target port 8080 |
 | Volume | `/data` |
 | Healthcheck | `/health`, timeout from `RAILWAY_HEALTHCHECK_TIMEOUT_SEC` |
