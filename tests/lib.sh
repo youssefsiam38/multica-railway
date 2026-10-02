@@ -62,17 +62,32 @@ req() {
 # send_code EMAIL -> sets CODE/BODY. The server allows one code per email per minute.
 send_code() { req "" POST /auth/send-code "$(jq -nc --arg e "$1" '{email:$e}')"; }
 
-# code_from_logs EMAIL -> the newest sign-in code for EMAIL (empty if none yet). From the service log, or, with
-# MAIL_URL (a Mailpit base URL, optionally with user:pass@) set, from the newest email to EMAIL.
-code_from_logs() {
-  local e id
+# codes_from_logs EMAIL -> every sign-in code for EMAIL, oldest first, one per line. From the service log, or, with
+# MAIL_URL (a Mailpit base URL) set, from the emails to EMAIL. Exits non-zero if the source could not be read, so a
+# transient failure is never mistaken for "no codes yet".
+codes_from_logs() {
+  local e out
   if [ -n "${MAIL_URL:-}" ]; then
-    id=$(curl -s --max-time 20 "$MAIL_URL/api/v1/search?query=$(jq -rn --arg q "to:$1 subject:verification" '$q|@uri')&limit=1" | jq -r '.messages[0].ID // empty')
-    [ -n "$id" ] && curl -s --max-time 20 "$MAIL_URL/api/v1/message/$id" | jq -r '.HTML // .Text' | grep -o '>[0-9]\{6\}<' | head -1 | tr -d '<>'
+    out=$(curl -sf --max-time 20 "$MAIL_URL/api/v1/search?query=$(jq -rn --arg q "to:$1 subject:verification" '$q|@uri')&limit=50") || return 1
+    local id
+    for id in $(jq -r '.messages | reverse | .[].ID' <<<"$out"); do
+      curl -sf --max-time 20 "$MAIL_URL/api/v1/message/$id" | jq -r '.HTML // .Text' | grep -o '>[0-9]\{6\}<' | head -1 | tr -d '<>'
+    done
     return 0
   fi
   e=${1//./[.]}
-  { eval "$LOGS_CMD" 2>/dev/null || true; } | grep -o "Verification code for $e: [0-9]\{6\}" | tail -1 | grep -o '[0-9]\{6\}$' || true
+  out=$(eval "$LOGS_CMD" 2>/dev/null) || return 1
+  grep -o "Verification code for $e: [0-9]\{6\}" <<<"$out" | grep -o '[0-9]\{6\}$' || true
+}
+
+# code_count EMAIL -> how many codes have been issued to EMAIL so far (retries until the source is readable).
+code_count() {
+  local i out
+  for i in $(seq 1 10); do
+    if out=$(codes_from_logs "$1"); then grep -c . <<<"$out" || true; return 0; fi
+    sleep 3
+  done
+  return 1
 }
 
 # invitation_link_from_logs EMAIL -> the newest invitation link logged for EMAIL.
@@ -83,8 +98,8 @@ invitation_link_from_logs() {
 # sign_in EMAIL JAR -> 0 on success; prints nothing. Sets TOKEN to the session JWT and leaves cookies in JAR.
 # Requests a code, reads it from the log (no email service configured) and verifies it, as a person would.
 sign_in() {
-  local email=$1 jar=$2 code="" before i
-  before=$(code_from_logs "$email")
+  local email=$1 jar=$2 code="" before i out
+  before=$(code_count "$email") || { CODE="log-unreadable"; return 1; }
   # One code per email per minute: wait out the limit if a previous step just asked for one.
   for i in $(seq 1 8); do
     send_code "$email"
@@ -92,10 +107,12 @@ sign_in() {
     sleep 10
   done
   [ "$CODE" = "200" ] || return 1
+  # Wait for a code newer than every code seen before the request (codes are logged in order).
   for i in $(seq 1 40); do
-    code=$(code_from_logs "$email")
-    [ -n "$code" ] && [ "$code" != "$before" ] && break
-    code=""; sleep 3
+    if out=$(codes_from_logs "$email") && [ "$(grep -c . <<<"$out" || true)" -gt "$before" ]; then
+      code=$(tail -1 <<<"$out"); break
+    fi
+    sleep 3
   done
   [ -n "$code" ] || { CODE="no-code-in-log"; return 1; }
   rm -f "$jar"
@@ -133,7 +150,7 @@ run_agent_task() {
   WS_ID=$2
   for i in $(seq 1 30); do
     req "$tok" GET /api/runtimes
-    rt=$(jq -r '[.[]? | select(.status == "online")] | last | .id // empty' <<<"$BODY")
+    rt=$(jq -r '[.[]? | objects | select(.status == "online")] | last | .id // empty' <<<"$BODY" 2>/dev/null || true)
     [ -n "$rt" ] && break; sleep 2
   done
   [ -n "$rt" ] || { echo "no online runtime" >&2; return 1; }
