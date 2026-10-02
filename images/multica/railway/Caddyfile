@@ -1,0 +1,65 @@
+# Public front door. The Multica API and web app both listen on loopback; everything reaches them through here.
+# This is the single-origin layout from upstream's SELF_HOSTING_ADVANCED.md: browser, CLI and agent daemon all use
+# one URL. WebSockets (/ws for the browser, /api/daemon/ws for daemons) and every API path go straight to the API,
+# because the web app's Next.js rewrites cannot carry a WebSocket upgrade. Everything else goes to the web app.
+{
+	admin off
+	auto_https off
+	persist_config off
+	servers {
+		# Railway's edge reaches the container from private/CGNAT ranges; trust its X-Forwarded-* headers only.
+		trusted_proxies static private_ranges 100.64.0.0/10
+		trusted_proxies_strict
+		client_ip_headers X-Forwarded-For
+	}
+	log {
+		output stderr
+		level WARN
+	}
+}
+
+# The API sees every request coming from 127.0.0.1, so hand it the resolved client IP alone (it trusts
+# X-Forwarded-For from loopback only, via MULTICA_TRUSTED_PROXIES). flush_interval -1 streams WebSocket frames and
+# server-sent events immediately instead of buffering them.
+(to_api) {
+	reverse_proxy 127.0.0.1:{$MULTICA_API_PORT} {
+		header_up X-Forwarded-For {client_ip}
+		flush_interval -1
+	}
+}
+
+(to_web) {
+	reverse_proxy 127.0.0.1:{$MULTICA_WEB_PORT} {
+		header_up X-Forwarded-For {client_ip}
+	}
+}
+
+:{$PORT} {
+	# Railway bakes MULTICA_APP_URL at deploy time, and renaming or adding a domain does not redeploy. The API's
+	# WebSocket origin check would then refuse the new domain (live updates silently stop). A request whose Origin is
+	# its own Host is same-origin by definition (and Railway only routes this service's domains here), so present it
+	# as the configured origin. Cross-site origins are left untouched and still refused.
+	@same_origin_other_domain expression `{http.request.header.Origin} != "" && ({http.request.header.Origin} == "https://" + {http.request.hostport} || {http.request.header.Origin} == "http://" + {http.request.hostport}) && {http.request.header.Origin} != "{$MULTICA_PUBLIC_ORIGIN}"`
+	request_header @same_origin_other_domain Origin {$MULTICA_PUBLIC_ORIGIN}
+
+	# /health/realtime trusts loopback callers, and every proxied request arrives from loopback. Keep it internal.
+	@internal path /health/*
+	handle @internal {
+		respond 404
+	}
+
+	# Browser pages under /auth (sign-in callbacks) belong to the web app; the rest of /auth is the API.
+	@web_auth path /auth/callback /auth/callback/* /auth/hg-sso/callback /auth/hg-sso/callback/*
+	handle @web_auth {
+		import to_web
+	}
+
+	@api path /api /api/* /v1 /v1/* /ws /ws/* /uploads /uploads/* /auth /auth/* /health /plugin-surfaces/*
+	handle @api {
+		import to_api
+	}
+
+	handle {
+		import to_web
+	}
+}

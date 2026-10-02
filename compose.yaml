@@ -1,0 +1,59 @@
+# Local test topology. Mirrors the Railway service graph:
+#   db       -> PostgreSQL 17 with pgvector, as upstream's self-host compose uses (own volume, private)
+#   multica  -> Caddy front door + Multica API + web app (wrapper image), /data volume for uploads, public
+name: multica-railway-test
+
+networks:
+  default:
+    name: multica-railway-test
+
+services:
+  db:
+    image: pgvector/pgvector:0.8.7-pg17@sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: multica
+      POSTGRES_PASSWORD: local-test-only-postgres-password
+      POSTGRES_DB: multica
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U multica -d multica']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  multica:
+    build:
+      context: .
+      dockerfile: images/multica/Dockerfile
+      args:
+        WRAPPER_VERSION: ${WRAPPER_VERSION:-0.0.0-local}
+        VCS_REF: ${VCS_REF:-local}
+    image: ${MULTICA_RAILWAY_IMAGE:-multica-railway:local}
+    restart: unless-stopped
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgres://multica:local-test-only-postgres-password@db:5432/multica?sslmode=disable
+      JWT_SECRET: local-test-only-00112233445566778899aabbccddeeff00112233445566778899aabbcc
+      # The tests resolve this name to 127.0.0.1 with curl --resolve; same port inside and out, as on Railway.
+      MULTICA_APP_URL: http://multica.test:${MULTICA_TEST_PORT:-18080}
+      ALLOWED_EMAILS: ${MULTICA_TEST_OWNER_EMAIL:-owner@example.com}
+      ALLOW_SIGNUP: 'false'
+      DO_NOT_TRACK: 'true'
+      MULTICA_VCS_INTEGRATION_ENABLED: 'true'
+      MULTICA_VCS_SECRET_KEY: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=
+      MULTICA_PLUGIN_SECRET_KEY: AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
+      MULTICA_SLACK_SECRET_KEY: AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=
+      MULTICA_TELEGRAM_SECRET_KEY: AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=
+      PORT: ${MULTICA_TEST_PORT:-18080}
+    ports:
+      - '127.0.0.1:${MULTICA_TEST_PORT:-18080}:${MULTICA_TEST_PORT:-18080}'
+    volumes:
+      - data:/data
+
+volumes:
+  pg:
+  data:
