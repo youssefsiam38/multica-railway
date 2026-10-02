@@ -54,6 +54,8 @@ assert_eq "the session belongs to the owner" "$OWNER_EMAIL" "$(jq -r .email <<<"
 assert_eq "the auth cookie is HttpOnly" "1" "$(grep -c '^#HttpOnly_.*multica_auth' "$OWNER")"
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -b "$OWNER" "${CURL_EXTRA[@]}" "$APP_URL/api/me")
 assert_eq "the browser cookie works through the front door" "200" "$CODE"
+req "$OTOK" PATCH /api/me '{"timezone":"Africa/Cairo"}'
+assert_eq "the API resolves IANA timezones" "200" "$CODE"
 slug="ws-$(rand)"
 req "$OTOK" POST /api/workspaces "$(jq -nc --arg s "$slug" '{name:"Smoke WS", slug:$s}')"
 assert_eq "create a workspace" "201" "$CODE"

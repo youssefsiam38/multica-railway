@@ -23,7 +23,9 @@ ARG VCS_REF=unknown
 ARG BUILD_DATE=1970-01-01T00:00:00Z
 
 USER root
-RUN apk add --no-cache bash tini su-exec
+# tzdata: the Go API resolves IANA zones (autopilot schedules, wakeups, user timezone) via the system zoneinfo, which
+# the official backend image ships and the web base image does not.
+RUN apk add --no-cache bash tini su-exec tzdata
 COPY --from=caddy /usr/bin/caddy /usr/local/bin/caddy
 # The backend's own files, at the layout its entrypoint expects (./migrate and ./server next to ./migrations).
 COPY --from=backend /app/server /app/migrate /app/multica /opt/multica-backend/

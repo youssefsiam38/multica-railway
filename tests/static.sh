@@ -47,6 +47,7 @@ assert_contains "production mode" 'APP_ENV=production' "$(cat "$df")"
 assert_contains "sign-up closed by default" 'ALLOW_SIGNUP=false' "$(cat "$df")"
 assert_contains "uploads on the volume" 'LOCAL_UPLOAD_DIR=/data/uploads' "$(cat "$df")"
 assert_contains "tini is PID 1" '"/sbin/tini", "--"' "$(cat "$df")"
+assert_contains "IANA zoneinfo installed for the API" '^RUN apk add .*\btzdata\b' "$(cat "$df")"
 assert_contains "upstream licence ships in the repo" 'Multica License' "$(head -1 licenses/MULTICA-LICENSE)"
 
 section "front door"
