@@ -23,12 +23,22 @@ ARG VCS_REF=unknown
 ARG BUILD_DATE=1970-01-01T00:00:00Z
 
 USER root
-RUN apk add --no-cache bash tini su-exec
+# The API runs on the web image, so it needs the runtime packages the official backend image ships: tzdata (IANA
+# zones for user timezones, autopilot schedules and wakeups) and ca-certificates. The parity check below enforces it.
+RUN apk add --no-cache bash tini su-exec tzdata ca-certificates
 COPY --from=caddy /usr/bin/caddy /usr/local/bin/caddy
 # The backend's own files, at the layout its entrypoint expects (./migrate and ./server next to ./migrations).
 COPY --from=backend /app/server /app/migrate /app/multica /opt/multica-backend/
 COPY --from=backend /app/migrations/ /opt/multica-backend/migrations/
 COPY --from=backend /app/LICENSE /app/NOTICE /opt/multica-backend/
+# Parity guard: fail the build if any package installed in the backend image is missing here, so a pin bump that adds
+# a backend runtime dependency breaks CI instead of the deployment.
+COPY --from=backend /lib/apk/db/installed /tmp/backend-apk-installed
+RUN missing=$(awk '/^P:/ { print substr($0, 3) }' /tmp/backend-apk-installed | while read -r p; do \
+      apk info -e "$p" >/dev/null || echo "$p"; done) \
+  && rm /tmp/backend-apk-installed \
+  && if [ -n "$missing" ]; then echo "backend runtime packages missing from the image: $missing" >&2; exit 1; fi \
+  && test -f /usr/share/zoneinfo/Africa/Cairo
 COPY images/multica/railway/ /opt/multica-railway/
 RUN chmod 0755 /opt/multica-railway/start.sh /opt/multica-railway/supervisor.sh \
   && chmod 0644 /opt/multica-railway/Caddyfile \
